@@ -1,5 +1,9 @@
 """
 Version history:
+	• v2.7.0:
+		- Date: 2026/04/26
+		- Changes:
+			= Added numbers to processing message so you can see overall progress.
 	• v2.6.0:
 		- Date: 2026/03/13
 		- Changes:
@@ -266,12 +270,14 @@ def main():
 			
 		else:
 			ytdlp_print_full_output = False
+			
+		urls_all_count = len(urls_all)
 		
-		for video_url in urls_all:
+		for video_index, video_url in enumerate(urls_all, start=1):
 			try:
 				print(SEPARATOR_SUB_SECTION)
 				
-				print(f"\nProcessing {video_url} ...\n")
+				print(f"\nProcessing {video_url} ({video_index} of {urls_all_count}) ...\n")
 				
 				ytdlp_args = [
 					"--paths", target_folder_path,
