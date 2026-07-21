@@ -1,5 +1,15 @@
 """
 Version history:
+	• v2.9.0:
+		- Date: 2026/07/21
+		- Changes:
+			= Added prefixing of current and total video numbers when full output is chosen.
+	• v2.8.0:
+		- Date: 2026/07/13
+		- Changes:
+			= Added support for Deno.
+			= Added support for Unicode.
+			= Added YouTube-specific output file name template of "<channel name> (<upload date as yyyy⧸mm⧸dd>)꞉ “<title>”". Unicode characters are used as per https://mythofechelon.co.uk/blog/2020/3/6/how-to-work-around-windows-restricted-characters
 	• v2.7.1:
 		- Date: 2026/06/24
 		- Changes:
@@ -67,12 +77,18 @@ import os
 import subprocess
 from pathlib import Path
 import requests
+import re
+import io
+import shutil
+import zipfile
 
 
 
-YTDLP_ENV_KEY = "YT-DLP_PATH"
+DENO_ENV_KEY = "DENO_PATH"
 
 FFMPEG_ENV_KEY = "FFMPEG_PATH"
+
+YTDLP_ENV_KEY = "YT-DLP_PATH"
 
 WRAPPING_CHARS = "'\" "
 
@@ -113,15 +129,20 @@ def get_file_version(file_path):
 	return file_version_section_list
 
 def check_and_update_exe_file(exe_release_url, exe_file_path):
-	print(f"\nChecking version of '{exe_file_path.name}' against {exe_release_url}...")
+	exe_file_name_with_extension = exe_file_path.name
+	
+	exe_file_name_without_extension = exe_file_path.stem
+	
+	print(f"\nChecking version of \"{exe_file_name_with_extension}\" against {exe_release_url} ...")
 		
 	exe_current_file_version_list = get_file_version(exe_file_path)
 	
-	del exe_current_file_version_list[-1] # 4th version section is unused with yt-dlp.
+	del exe_current_file_version_list[-1] # 4th version section is unused with yt-dlp and Deno.
 	
-	for date_index, date_value in enumerate(exe_current_file_version_list):
-		if len(date_value) == 1:
-			exe_current_file_version_list[date_index] = f"0{date_value}" # To (1) be in the same format as the release tags and (2) allow for using maths operators on dates converted to integers later.
+	if re.search(r"^20\d{2}$", exe_current_file_version_list[0]) and re.search(r"^0?[1-9]|1[012]$", exe_current_file_version_list[1]) and re.search(r"^0?[1-9]|[12][0-9]|3[01]$", exe_current_file_version_list[2]): # Date-based version.
+		for index, value in enumerate(exe_current_file_version_list):
+			if len(value) == 1:
+				exe_current_file_version_list[index] = f"0{value}" # To (1) be in the same format as the release tags and (2) allow for using maths operators on dates converted to integers later.
 	
 	exe_current_file_version_string = ".".join(exe_current_file_version_list)
 		
@@ -132,48 +153,70 @@ def check_and_update_exe_file(exe_release_url, exe_file_path):
 	
 	
 	try:
-		exe_latest_release_api_response = requests.get(exe_release_url)
+		latest_release_api_response = requests.get(exe_release_url)
 		
-		exe_latest_release_api_response.raise_for_status()
+		latest_release_api_response.raise_for_status()
 		
-		exe_latest = exe_latest_release_api_response.json()
+		latest_release = latest_release_api_response.json()
 		
-		exe_latest_release_version_string = exe_latest["tag_name"]
+		latest_release_version_string = latest_release["tag_name"].strip("v")
 		
-		print(f"\tLatest:  {exe_latest_release_version_string}")
+		print(f"\tLatest:  {latest_release_version_string}")
 		
-		exe_latest_release_version_int = int(exe_latest_release_version_string.replace(".", ""))
+		latest_release_version_int = int(latest_release_version_string.replace(".", ""))
 		
 		
 		
-		if exe_latest_release_version_int <= exe_current_file_version_int:
+		if latest_release_version_int <= exe_current_file_version_int:
 			print("\nNo update available.")
 			
 		else:
 			exe_update = input("\nNew version available. Update? (y/n)\n")
 			
 			if exe_update.lower().startswith("y"):
-				for exe_latest_release_file in exe_latest["assets"]:
-					if exe_latest_release_file["name"].lower() == "yt-dlp.exe":
-						exe_latest_release_file_url = exe_latest_release_file["browser_download_url"]
+				for latest_release_file in latest_release["assets"]:
+					if latest_release_file["name"].lower() == "yt-dlp.exe" or latest_release_file["name"].lower() == "deno-x86_64-pc-windows-msvc.zip":
+						latest_release_file_url = latest_release_file["browser_download_url"]
 						
 						try:
-							with requests.get(exe_latest_release_file_url, stream=True) as exe_latest_file_api_response:
-								exe_latest_file_api_response.raise_for_status()
+							print(f"\nDownloading {latest_release_file_url} ...")
+							
+							latest_file_api_response = requests.get(latest_release_file_url, stream=True)
+							
+							latest_file_api_response.raise_for_status()
+							
+							buffer = io.BytesIO()
+
+							for chunk in latest_file_api_response.iter_content(chunk_size=1024 * 1024):
+								if chunk:
+									buffer.write(chunk)
+							
+							latest_file_name_with_version = f"{exe_file_name_without_extension}-{latest_release_version_string}.exe"
 								
-								exe_latest_file_name_with_version = f"yt-dlp-{exe_latest_release_version_string}.exe"
-								
-								exe_latest_file_with_version_path = exe_file_path.with_name(exe_latest_file_name_with_version)
-								
-								with open(exe_latest_file_with_version_path, "wb") as exe_latest_file:
-									for chunk in exe_latest_file_api_response.iter_content(chunk_size=8192):
-										exe_latest_file.write(chunk)
-										
-								print(f"\nDownloaded {exe_latest_release_file_url} to '{exe_latest_file_with_version_path}'.")
+							latest_file_path_with_version = exe_file_path.with_name(latest_file_name_with_version)
+
+							buffer.seek(0)
+							
+							is_file_file = zipfile.is_zipfile(buffer)
+
+							buffer.seek(0)
+							
+							if not is_file_file:
+								with open(latest_file_path_with_version, "wb") as exe_file:
+									shutil.copyfileobj(buffer, exe_file)
+									
+							else:
+								with zipfile.ZipFile(buffer) as zip_file:
+									for member in zip_file.infolist():
+										if not member.is_dir() and member.filename.lower().endswith(".exe"):
+											with zip_file.open(member) as source_exe_file, open(latest_file_path_with_version, "wb") as target_exe_file:
+												shutil.copyfileobj(source_exe_file, target_exe_file)
+							
+							print(PRINT_FORMAT_SUCCESS.format(message=f"Saved to \"{latest_file_path_with_version}\"."))
 							
 							exe_current_file = exe_file_path.name
 							
-							exe_old_file_name = f"yt-dlp-{exe_current_file_version_string}.exe"
+							exe_old_file_name = f"{exe_file_name_without_extension}-{exe_current_file_version_string}.exe"
 							
 							exe_old_file_with_version_path = exe_file_path.with_name(exe_old_file_name)
 							
@@ -182,11 +225,11 @@ def check_and_update_exe_file(exe_release_url, exe_file_path):
 							
 							exe_file_path.rename(exe_old_file_with_version_path)
 							
-							print(f"\nRenamed '{exe_current_file}' to '{exe_old_file_name}'.")
+							print(f"\nArchived old by renaming \"{exe_current_file}\" to \"{exe_old_file_name}\".")
 							
-							exe_file_path.write_bytes(exe_latest_file_with_version_path.read_bytes())
+							exe_file_path.write_bytes(latest_file_path_with_version.read_bytes())
 							
-							print(f"\nDuplicated '{exe_latest_file_name_with_version}' as '{exe_current_file}'.")
+							print(f"\nInstated new by duplicating \"{latest_file_name_with_version}\" as \"{exe_current_file}\".")
 							
 						except Exception as error:
 							print("\n" + PRINT_FORMAT_ERROR.format(message=str(error)))
@@ -199,7 +242,7 @@ def check_and_update_exe_file(exe_release_url, exe_file_path):
 	return
 
 def save_path(validated_path, env_key):
-	print(f"\nRemembering this for next time by setting environment variable '{env_key}'...")
+	print(f"\nRemembering this for next time by setting environment variable \"{env_key}\" ...")
 	
 	subprocess.run(["setx", env_key, validated_path])
 
@@ -214,12 +257,12 @@ def get_valid_exe_path(name, setup_message, env_key=None):
 				file_path = os.getenv(env_key)
 				
 				if file_path:
-					print(f"\n{name} .EXE file path retrieved from environment variable '{env_key}':\n'{file_path}'")
+					print(f"\n{name} .EXE file path retrieved from environment variable \"{env_key}\":\n\"{file_path}\"")
 					
 					file_path_from_env = True
 					
 				else:
-					print(f"\n{name} .EXE file path could not be retrieved from environment variable '{env_key}'.")
+					print(f"\n{name} .EXE file path could not be retrieved from environment variable \"{env_key}\".")
 			
 			if not file_path:
 				file_path = get_user_input(
@@ -227,7 +270,7 @@ def get_valid_exe_path(name, setup_message, env_key=None):
 					blanks_allowed=False
 				)
 				
-			print(f"\nChecking file path...")
+			print(f"\nChecking file path ...")
 			
 			file_path = Path(str(file_path).strip(WRAPPING_CHARS))
 			
@@ -261,9 +304,24 @@ def get_user_input(message, blanks_allowed=False):
 	
 
 def main():
+	deno_file_path = get_valid_exe_path(
+		name="Deno",
+		setup_message="\nEnter the path to the Deno .EXE file (download from https://github.com/denoland/deno/releases/latest → \"deno-x86_64-pc-windows-msvc.zip\"), used to \"solve JavaScript challenges presented by YouTube\":\n",
+		env_key=DENO_ENV_KEY
+	)
+	
+	check_and_update_exe_file(
+		exe_release_url="https://api.github.com/repos/denoland/deno/releases/latest",
+		exe_file_path=deno_file_path
+	)
+			
+	print(SEPARATOR_MAIN_SECTION)
+	
+	
+	
 	ffmpeg_file_path = get_valid_exe_path(
 		name="FFMPEG",
-		setup_message="\nEnter the path to the FFMPEG .EXE file (download from https://ffmpeg.org/download.html#build-windows):\n",
+		setup_message="\nEnter the path to the FFMPEG .EXE file (download from https://ffmpeg.org/download.html#build-windows), used to fix any issues with the created video files:\n",
 		env_key=FFMPEG_ENV_KEY
 	)
 	
@@ -277,10 +335,6 @@ def main():
 		env_key=YTDLP_ENV_KEY
 	)
 	
-	print(SEPARATOR_MAIN_SECTION)
-		
-		
-		
 	check_and_update_exe_file(
 		exe_release_url="https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest",
 		exe_file_path=ytdlp_file_path
@@ -293,12 +347,12 @@ def main():
 	last_target_folder_path = DEFAULT_TARGET_FOLDER_PATH
 	
 	while True:		
-		target_folder_path = input(f"\nEnter the target folder path (default '{last_target_folder_path}'):\n").strip(WRAPPING_CHARS)
+		target_folder_path = input(f"\nEnter the target folder path (default \"{last_target_folder_path}\"):\n").strip(WRAPPING_CHARS)
 		
 		if not target_folder_path:
 			target_folder_path = last_target_folder_path
 		
-		print(f"\nChecking given path...")
+		print(f"\nChecking given path ...")
 		
 		if target_folder_path and Path(target_folder_path).exists() and Path(target_folder_path).is_dir():
 			print(PRINT_FORMAT_SUCCESS.format(message="Folder path valid."))
@@ -350,30 +404,38 @@ def main():
 		
 		
 		
-		print("\nDownloading videos...")
+		print("\nDownloading videos ...")
 		
 		for video_index, video_url in enumerate(urls_all, start=1):
 			try:
 				if video_index > 1:
 					print(SEPARATOR_SUB_SECTION)
 				
-				print(f"\nProcessing video {video_index} of {urls_all_count}: {video_url}...\n")
+				print(f"\nProcessing video {video_index} of {urls_all_count}: {video_url} ...\n")
 				
 				ytdlp_args = [
-					"--paths", target_folder_path,
-					"--replace-in-metadata", "title", r"[^0-9A-Za-z ._-]", "_",
-					"--print", "after_move:%(filepath)s",
-					"--no-quiet", "--progress",
+					"--js-runtimes", f"deno:{deno_file_path}",
 					"--ffmpeg-location", ffmpeg_file_path,
+					# "--replace-in-metadata", "title", r"[^0-9A-Za-z ._-]", "_", # This was to ensure that the file name only contained certain characters.
+					"--no-quiet", "--progress", "--newline", # Ensure that progress can be printed.
+					"--paths", target_folder_path,
+					"--windows-filenames",
+					"--encoding", "utf-8", # Required to prevent Unicode characters in the output from being stripped out.
+					"--print", "after_move:%(filepath)s", # Needed in order to check whether the file exists.
 					video_url
 				]
 				
+				if "youtube.com" in video_url:
+					ytdlp_args.extend(["--output", "%(channel)s (%(upload_date>%Y∕%m∕%d)s)꞉ “%(title)s”.%(ext)s"]) # See https://mythofechelon.co.uk/blog/2020/3/6/how-to-work-around-windows-restricted-characters
+				
 				output_lines = []
 				
-				with subprocess.Popen([ytdlp_file_path, *ytdlp_args], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1) as ytdlp_process:
-					for output_line in ytdlp_process.stdout:
+				with subprocess.Popen([ytdlp_file_path, *ytdlp_args], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=False) as ytdlp_process:
+					for output_bytes in iter(ytdlp_process.stdout.readline, b""):
+						output_line = output_bytes.decode("utf-8", errors="replace")
+						
 						if ytdlp_print_full_output:
-							print(output_line, end="")
+							print(f"{video_index} of {urls_all_count}: {output_line}", end="")
 						
 						output_lines.append(output_line)
 						
@@ -391,7 +453,7 @@ def main():
 					raise Exception("Output file doesn't exist.")
 					
 				else:
-					video_file_name = f"'{output_lines_last_path.name}'"
+					video_file_name = f'"{output_lines_last_path.name}"'
 					
 					print("\n" + PRINT_FORMAT_SUCCESS.format(message=f"Saved to file: {video_file_name}"))
 					
